@@ -121,3 +121,7 @@ DJANGO_SETTINGS_MODULE=config.settings.dev SECRET_KEY=test-secret python manage.
 ```
 
 GitHub Actions runs checks, migration consistency validation, and the test suite for pushes and pull requests.
+
+## Deployment
+
+Production deployment configured through Railway.

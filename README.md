@@ -130,6 +130,7 @@ Configure PostgreSQL and Redis, then set `DJANGO_SETTINGS_MODULE=config.settings
 - Railway wildcard hosts use Django's leading-dot syntax: `.up.railway.app`, **not** `*.up.railway.app`.
 - Railway terminates TLS at its edge. Set `SECURE_SSL_REDIRECT=False` so its internal plain-HTTP health check receives a `200`, not a redirect.
 - Run web and Celery worker services with the same application configuration. The `Procfile` includes web, worker, and migration release commands.
+- Railway Worker watches the repository and deploys from the current main revision.
 
 ## Testing and CI
 

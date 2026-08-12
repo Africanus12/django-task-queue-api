@@ -2,10 +2,19 @@ from .base import *  # noqa
 
 DEBUG = False
 
+if SECRET_KEY == "dev-insecure-secret-key-change-me":
+    raise RuntimeError("SECRET_KEY must be set in production.")
+if not ALLOWED_HOSTS:
+    raise RuntimeError("ALLOWED_HOSTS must be configured in production.")
+
+# Railway terminates TLS at its edge. Set this to False there so internal HTTP
+# health checks do not receive redirects.
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
-SECURE_HSTS_SECONDS = 31536000
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"

@@ -4,83 +4,76 @@ import requests
 from celery import shared_task
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 
 from .models import Task
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=10)
+@shared_task(bind=True, max_retries=3)
 def process_task(self, task_id):
-    task = Task.objects.get(id=task_id)
-    task.status = "running"
-    task.save(update_fields=["status"])
-
     try:
+        with transaction.atomic():
+            task = Task.objects.select_for_update().filter(id=task_id).first()
+            if task is None or task.status not in {Task.Status.PENDING, Task.Status.RETRYING}:
+                return None
+            task.status = Task.Status.RUNNING
+            task.save(update_fields=["status", "updated_at"])
         result = dispatch(task.task_type, task.payload)
     except Exception as exc:
-        task.status = "failed"
-        task.error = str(exc)
-        task.retries += 1
-        task.save(update_fields=["status", "error", "retries"])
-        _fire_webhook(task)
-        try:
-            raise self.retry(exc=exc)
-        except self.MaxRetriesExceededError:
-            return None
+        retry_task = False
+        with transaction.atomic():
+            task = Task.objects.select_for_update().filter(id=task_id).first()
+            if task is None:
+                return None
+            task.error = str(exc)
+            task.retries = self.request.retries + 1
+            retry_task = self.request.retries < self.max_retries
+            task.status = Task.Status.RETRYING if retry_task else Task.Status.FAILED
+            task.save(update_fields=["status", "error", "retries", "updated_at"])
+        # Raise outside atomic() so the retrying status is committed before Celery
+        # schedules the next execution.
+        if retry_task:
+            raise self.retry(exc=exc, countdown=min(2 ** task.retries, 300))
+        deliver_webhook.delay(str(task.id))
+        return None
 
-    task.status = "success"
-    task.result = result
-    task.save(update_fields=["status", "result"])
-    _fire_webhook(task)
+    with transaction.atomic():
+        task = Task.objects.select_for_update().get(id=task_id)
+        if task.status == Task.Status.CANCELED:
+            return None
+        task.status, task.result, task.error = Task.Status.SUCCESS, result, None
+        task.save(update_fields=["status", "result", "error", "updated_at"])
+    deliver_webhook.delay(str(task.id))
     return result
 
 
 def dispatch(task_type, payload):
-    handlers = {
-        "echo": _handle_echo,
-        "send_email": _handle_send_email,
-    }
-    handler = handlers.get(task_type)
-    if not handler:
-        raise ValueError(f"Unknown task_type: {task_type}")
-    return handler(payload)
+    if task_type == "echo":
+        return {"echoed": payload}
+    if task_type == "send_email":
+        required = {"to", "subject", "message"}
+        missing = required - payload.keys()
+        if missing:
+            raise ValueError(f"Missing fields for send_email: {sorted(missing)}")
+        send_mail(payload["subject"], payload["message"], settings.DEFAULT_FROM_EMAIL, [payload["to"]], fail_silently=False)
+        return {"sent_to": payload["to"]}
+    raise ValueError(f"Unknown task_type: {task_type}")
 
 
-def _handle_echo(payload):
-    return {"echoed": payload}
-
-
-def _handle_send_email(payload):
-    required = {"to", "subject", "message"}
-    missing = required - payload.keys()
-    if missing:
-        raise ValueError(f"Missing fields for send_email: {missing}")
-
-    send_mail(
-        subject=payload["subject"],
-        message=payload["message"],
-        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-        recipient_list=[payload["to"]],
-        fail_silently=False,
-    )
-    return {"sent_to": payload["to"]}
-
-
-def _fire_webhook(task):
-    if not task.webhook_url:
-        return
+@shared_task(bind=True, max_retries=3)
+def deliver_webhook(self, task_id):
+    task = Task.objects.filter(id=task_id).first()
+    if not task or not task.webhook_url:
+        return None
     try:
-        requests.post(
-            task.webhook_url,
-            json={
-                "id": str(task.id),
-                "task_type": task.task_type,
-                "status": task.status,
-                "result": task.result,
-                "error": task.error,
-            },
-            timeout=getattr(settings, "TASK_WEBHOOK_TIMEOUT", 5),
-        )
-    except requests.RequestException:
-        logger.warning("Webhook delivery failed for task %s", task.id)
+        response = requests.post(task.webhook_url, json={"id": str(task.id), "task_type": task.task_type, "status": task.status, "result": task.result, "error": task.error}, timeout=settings.TASK_WEBHOOK_TIMEOUT)
+        response.raise_for_status()
+        Task.objects.filter(id=task_id).update(webhook_status=Task.WebhookStatus.DELIVERED, webhook_attempts=self.request.retries + 1, webhook_error=None)
+    except requests.RequestException as exc:
+        attempts = self.request.retries + 1
+        Task.objects.filter(id=task_id).update(webhook_status=Task.WebhookStatus.FAILED, webhook_attempts=attempts, webhook_error=str(exc))
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=min(2 ** attempts, 300))
+        logger.warning("Webhook delivery permanently failed for task %s", task_id)

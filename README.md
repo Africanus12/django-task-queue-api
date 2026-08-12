@@ -1,110 +1,123 @@
 # Task Queue Platform
 
-A production-ready Django + DRF + Celery + Redis job queue API. Submit a task,
-it runs asynchronously via a Celery worker, poll (or get webhooked) for the result.
+A Django REST Framework task queue API backed by Celery, Redis, and PostgreSQL. Clients submit supported jobs, then retrieve their lifecycle and result asynchronously. The API supports JWT authentication, idempotent creation, ownership isolation, task retry/cancellation, and best-effort webhook delivery that is independent of job execution.
 
 ## Live deployment
 
 - **API:** https://web-production-0d58f.up.railway.app
-- **Health check:** https://web-production-0d58f.up.railway.app/healthz/
+- **Application health:** https://web-production-0d58f.up.railway.app/health/
+- **Readiness:** https://web-production-0d58f.up.railway.app/ready/
+- **API docs:** https://web-production-0d58f.up.railway.app/api/docs/
 
-## Stack
+## Architecture
 
-- Django 5.1 + Django REST Framework
-- Celery 5 + Redis (broker + result backend)
-- Postgres (production), SQLite (local fallback)
-- Token authentication
-- Gunicorn + WhiteNoise for serving
+- Django 5.1 and Django REST Framework
+- Celery + Redis for asynchronous work and results
+- PostgreSQL in production; SQLite is available for local fallback/testing
+- JWT for new clients; existing DRF token authentication remains accepted for compatibility
+- Gunicorn + WhiteNoise for web serving
+
+## Task status lifecycle
+
+`pending` → `running` → `success`
+
+A transient execution error moves a job to `retrying`; the task becomes `failed` only after Celery exhausts its configured retries. A queued/running task may be moved to `canceled`. Webhook delivery runs separately, so a webhook failure never changes a successful task into a failed one.
+
+## Quick start
+
+```bash
+cp .env.example .env
+# Set a real SECRET_KEY and choose config.settings.dev for local development.
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+DJANGO_SETTINGS_MODULE=config.settings.dev python manage.py migrate
+DJANGO_SETTINGS_MODULE=config.settings.dev python manage.py runserver
+```
+
+For Docker-based development, run `docker-compose up --build`, then migrate with `docker-compose exec web python manage.py migrate`.
+
+Start a worker in another shell:
+
+```bash
+DJANGO_SETTINGS_MODULE=config.settings.dev celery -A config worker --loglevel=info
+```
+
+## Authentication
+
+Register, then exchange credentials for access and refresh tokens:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/register/ \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"a-strong-password"}'
+
+curl -X POST http://localhost:8000/api/v1/auth/login/ \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"a-strong-password"}'
+```
+
+Pass the access token as `Authorization: Bearer <access-token>`. The legacy `Authorization: Token <token>` mechanism remains supported during migration.
 
 ## API
 
-All endpoints are under `/api/v1/`.
+All task endpoints are under `/api/v1/` and only return tasks owned by the authenticated user.
 
-### Get an auth token
-```
-POST /api/v1/auth/token/
-{ "username": "you", "password": "..." }
-```
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| POST | `/auth/register/` | Register a user |
+| POST | `/auth/login/` | Obtain JWT access and refresh tokens |
+| POST | `/auth/refresh/` | Refresh an access token |
+| POST | `/tasks/` | Create a task |
+| GET | `/tasks/` | List the caller's tasks (paginated) |
+| GET | `/tasks/{id}/` | Retrieve one task |
+| POST | `/tasks/{id}/retry/` | Retry a failed or canceled task |
+| POST | `/tasks/{id}/cancel/` | Cancel a pending/running task |
 
-### Create a task
-```
-POST /api/v1/tasks/
-Authorization: Token <your-token>
-
-{
-  "task_type": "echo",
-  "payload": { "hello": "world" },
-  "webhook_url": "https://yourapp.com/webhooks/task-complete"  // optional
-}
-```
-
-### Check status
-```
-GET /api/v1/tasks/<id>/
-```
-
-### List your tasks
-```
-GET /api/v1/tasks/
-```
-
-Built-in task types: `echo` (test), `send_email` (requires `to`, `subject`, `message`
-in payload and email backend configured). Add more handlers in `tasks/executors.py`
-inside the `dispatch()` function.
-
-## Local development
+Create an idempotent task:
 
 ```bash
-cp .env.example .env   # edit values, generate a fresh SECRET_KEY
-docker-compose up --build
-docker-compose exec web python manage.py migrate
-docker-compose exec web python manage.py createsuperuser
+curl -X POST http://localhost:8000/api/v1/tasks/ \
+  -H 'Authorization: Bearer <access-token>' \
+  -H 'Idempotency-Key: invoice-123' \
+  -H 'Content-Type: application/json' \
+  -d '{"task_type":"echo","payload":{"hello":"world"}}'
 ```
 
-API at http://localhost:8000/api/v1/, admin at http://localhost:8000/admin/.
+Submitting the same idempotency key again for the same user returns the original task rather than creating another one. The key is unique per owner.
 
-## Deploy to Railway
+Supported types are `echo` and `send_email`. `send_email` requires `to`, `subject`, and `message` in its payload and uses Django's configured email backend.
 
-1. Push this project to a GitHub repo.
-2. On Railway: **New Project → Deploy from GitHub repo**, pick this repo.
-3. Add two plugins: **PostgreSQL** and **Redis**. Railway auto-injects
-   `DATABASE_URL`. Copy the Redis connection string into a `REDIS_URL` variable.
-4. In the web service's Variables tab, set:
-   - `SECRET_KEY` — generate a fresh one; do not reuse the example value.
-   - `DJANGO_SETTINGS_MODULE=config.settings.prod`
-   - `ALLOWED_HOSTS=<your-app>.up.railway.app`
-   - `REDIS_URL` — from the Redis plugin.
-   - `CORS_ALLOWED_ORIGINS` — your frontend origin, if applicable.
-5. Railway builds from the `Dockerfile` automatically and runs `release:` (migrations)
-   from the Procfile before each deploy.
-6. Add a second service from the same repository for the worker. Set its start command to:
-   ```
-   celery -A config worker --loglevel=info
-   ```
-   Give it the same environment variables as the web service.
-7. Once deployed, run once via Railway's shell or CLI:
-   ```
-   railway run python manage.py createsuperuser
-   ```
-8. Confirm health at `GET https://<your-app>.up.railway.app/healthz/`.
+## Webhooks
 
-## Railway gotchas learned during deployment
+Pass an optional `webhook_url` at creation. Terminal task outcomes are posted with task ID, type, status, result, and error. Delivery uses a short configurable timeout and exponential retry; webhook status, attempts, and the latest delivery error are recorded on the task. Execution status is never changed by a delivery failure.
 
-- For wildcard Railway domains, `ALLOWED_HOSTS` must use Django's leading-dot syntax:
-  ```
-  .up.railway.app
-  ```
-  Do **not** use `*.up.railway.app`; that is invalid Django syntax and can cause silent
-  HTTP 400 responses on every request.
-- Set `SECURE_SSL_REDIRECT=False` in Railway environment variables. With it enabled,
-  Railway's internal plain-HTTP health check can be redirected instead of receiving a
-  `200` response. Railway terminates TLS at the edge, so disabling Django's redirect
-  does not remove HTTPS protection for public traffic.
+## Health and documentation
 
-## Notes
+- `/health/` is a lightweight liveness endpoint.
+- `/ready/` checks the database before returning `200`.
+- `/api/schema/` publishes OpenAPI JSON.
+- `/api/docs/` serves interactive Swagger UI.
 
-- Webhook delivery is best-effort (5s timeout, no retry queue). For guaranteed
-  delivery, add a `WebhookDelivery` model and retry via Celery.
-- `send_email` uses Django's email backend; set `EMAIL_BACKEND` and SMTP vars
-  in `config/settings/prod.py` for real delivery, or leave console backend for testing.
-- Rate limiting defaults to 100 requests/minute per user via DRF throttling.
+## Environment variables
+
+See `.env.example`. Production requires `SECRET_KEY` and a non-empty `ALLOWED_HOSTS`. Important variables include `DATABASE_URL`, `REDIS_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `TASK_WEBHOOK_TIMEOUT`, and `SECURE_SSL_REDIRECT`.
+
+## Railway deployment notes
+
+Configure PostgreSQL and Redis, then set `DJANGO_SETTINGS_MODULE=config.settings.prod`, a long random `SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, and `ALLOWED_HOSTS`.
+
+- Railway wildcard hosts use Django's leading-dot syntax: `.up.railway.app`, **not** `*.up.railway.app`.
+- Railway terminates TLS at its edge. Set `SECURE_SSL_REDIRECT=False` so its internal plain-HTTP health check receives a `200`, not a redirect.
+- Run web and Celery worker services with the same application configuration. The `Procfile` includes web, worker, and migration release commands.
+
+## Testing and CI
+
+Run:
+
+```bash
+DJANGO_SETTINGS_MODULE=config.settings.dev SECRET_KEY=test-secret python manage.py check
+DJANGO_SETTINGS_MODULE=config.settings.dev SECRET_KEY=test-secret python manage.py test
+```
+
+GitHub Actions runs checks, migration consistency validation, and the test suite for pushes and pull requests.

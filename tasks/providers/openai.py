@@ -21,7 +21,10 @@ class OpenAIProvider(BaseProvider):
             raise ProviderError("Unable to list OpenAI models.") from exc
 
     def generate(self, api_key, prompt, model=None, **options):
+        safety_identifier = options.pop("safety_identifier", None)
         body = {"model": model or self.default_model, "input": prompt, "store": False}
+        if safety_identifier:
+            body["safety_identifier"] = safety_identifier
         body.update(self.normalize_options(options))
         try:
             response = requests.post(f"{self.base_url}/responses", headers=self._headers(api_key), json=body, timeout=120)

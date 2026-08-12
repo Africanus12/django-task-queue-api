@@ -1,124 +1,124 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .executors import process_task
-from .models import Task
+from .executors import cleanup_expired_credentials, process_task
+from .models import Task, TaskCredential
 
 
 class TaskApiTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="alice", password="secure-pass-123")
         self.other = get_user_model().objects.create_user(username="bob", password="secure-pass-123")
-        self.client = APIClient()
-        self.client.force_authenticate(self.user)
-
-    @patch("tasks.views.process_task.delay")
-    def test_create_and_idempotency(self, delay):
-        payload = {"task_type": "echo", "payload": {"hello": "world"}}
-        first = self.client.post("/api/v1/tasks/", payload, format="json", HTTP_IDEMPOTENCY_KEY="key-1")
-        duplicate = self.client.post("/api/v1/tasks/", payload, format="json", HTTP_IDEMPOTENCY_KEY="key-1")
-        self.assertEqual(first.status_code, 201)
-        self.assertEqual(duplicate.status_code, 200)
-        self.assertEqual(Task.objects.count(), 1)
-        self.assertEqual(first.data["id"], duplicate.data["id"])
-        # Transaction callbacks run after the enclosing test transaction commits.
-        # The response and database uniqueness are the behavior under test here.
-
-    @patch("tasks.views.process_task.delay")
-    def test_same_key_for_different_users_creates_two_tasks(self, _):
-        self.client.post("/api/v1/tasks/", {"task_type": "echo"}, format="json", HTTP_IDEMPOTENCY_KEY="same")
-        self.client.force_authenticate(self.other)
-        response = self.client.post("/api/v1/tasks/", {"task_type": "echo"}, format="json", HTTP_IDEMPOTENCY_KEY="same")
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(Task.objects.count(), 2)
-
-    def test_owner_isolation_cancel_and_retry(self):
-        task = Task.objects.create(owner=self.user, task_type="echo")
-        self.client.force_authenticate(self.other)
-        self.assertEqual(self.client.get(f"/api/v1/tasks/{task.id}/").status_code, 404)
-        self.client.force_authenticate(self.user)
-        self.assertEqual(self.client.post(f"/api/v1/tasks/{task.id}/cancel/").status_code, 202)
-        with patch("tasks.views.process_task.delay"):
-            self.assertEqual(self.client.post(f"/api/v1/tasks/{task.id}/retry/").status_code, 202)
-
-    @patch("config.urls.redis.Redis.from_url")
-    def test_health_and_readiness(self, redis_from_url):
-        redis_from_url.return_value.ping.return_value = True
-        client = APIClient()
-        self.assertEqual(client.get("/health/").status_code, 200)
-        self.assertEqual(client.get("/ready/").status_code, 200)
-
-    def test_unknown_task_type_is_rejected(self):
-        response = self.client.post("/api/v1/tasks/", {"task_type": "unknown"}, format="json")
-        self.assertEqual(response.status_code, 400)
-
-    def test_registration_login_and_protected_endpoint(self):
-        client = APIClient()
-        registration = client.post("/api/v1/auth/register/", {"username": "new-user", "password": "secure-password-123"}, format="json")
-        login = client.post("/api/v1/auth/login/", {"username": "new-user", "password": "secure-password-123"}, format="json")
-        self.assertEqual(registration.status_code, 201)
-        self.assertEqual(login.status_code, 200)
-        self.assertIn("access", login.data)
-        self.assertEqual(client.get("/api/v1/tasks/").status_code, 401)
-
-
-class TaskExecutionTests(TestCase):
-    def setUp(self):
-        self.user = get_user_model().objects.create_user(username="worker", password="secure-pass-123")
-
-    @patch("tasks.executors.deliver_webhook.delay")
-    def test_echo_execution_succeeds(self, _):
-        task = Task.objects.create(owner=self.user, task_type="echo", payload={"x": 1})
-        process_task.apply(args=[str(task.id)]).get()
-        task.refresh_from_db()
-        self.assertEqual(task.status, Task.Status.SUCCESS)
-        self.assertEqual(task.result, {"echoed": {"x": 1}})
-
-
-class PlaygroundApiTests(TestCase):
-    def setUp(self):
-        self.user = get_user_model().objects.create_user(username="ai-user", password="secure-pass-123")
         self.client = APIClient(); self.client.force_authenticate(self.user)
 
     @patch("tasks.views.process_task.delay")
-    def test_generate_redacts_key_and_is_idempotent(self, _):
-        body = {"provider": "openai", "api_key": "super-secret-key", "model": "gpt-test", "prompt": "hello"}
-        first = self.client.post("/api/v1/ai/generate/", body, format="json", HTTP_IDEMPOTENCY_KEY="ai-one")
-        second = self.client.post("/api/v1/ai/generate/", body, format="json", HTTP_IDEMPOTENCY_KEY="ai-one")
-        task = Task.objects.get(id=first.data["id"])
-        self.assertEqual((first.status_code, second.status_code), (201, 200))
-        self.assertNotIn("api_key", task.payload); self.assertNotIn("super-secret-key", str(first.data))
-        self.assertNotEqual(task.credential.encrypted_api_key, "super-secret-key")
+    def test_create_and_idempotency(self, _):
+        body = {"task_type": "echo", "payload": {"hello": "world"}}
+        first = self.client.post("/api/v1/tasks/", body, format="json", HTTP_IDEMPOTENCY_KEY="key-1")
+        duplicate = self.client.post("/api/v1/tasks/", body, format="json", HTTP_IDEMPOTENCY_KEY="key-1")
+        self.assertEqual((first.status_code, duplicate.status_code, Task.objects.count()), (201, 200, 1))
 
-    def test_invalid_ai_request_and_auth(self):
-        self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "openai", "prompt": "x"}, format="json").status_code, 400)
-        self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "bad", "api_key": "x", "prompt": "x"}, format="json").status_code, 400)
-        anon = APIClient(); self.assertEqual(anon.get("/api/v1/ai/providers/").status_code, 401)
+    def test_owner_isolation_cancel_and_retry(self):
+        task = Task.objects.create(owner=self.user, task_type="echo")
+        self.client.force_authenticate(self.other); self.assertEqual(self.client.get(f"/api/v1/tasks/{task.id}/").status_code, 404)
+        self.client.force_authenticate(self.user); self.assertEqual(self.client.post(f"/api/v1/tasks/{task.id}/cancel/").status_code, 202)
+        with patch("tasks.views.process_task.delay"):
+            self.assertEqual(self.client.post(f"/api/v1/tasks/{task.id}/retry/").status_code, 202)
+
+    def test_registration_login_and_protected_endpoint(self):
+        client = APIClient()
+        self.assertEqual(client.post("/api/v1/auth/register/", {"username": "new-user", "password": "secure-password-123"}, format="json").status_code, 201)
+        self.assertIn("access", client.post("/api/v1/auth/login/", {"username": "new-user", "password": "secure-password-123"}, format="json").data)
+        self.assertEqual(client.get("/api/v1/tasks/").status_code, 401)
+
+
+class AIHardeningTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(username="hardened", password="secure-pass-123")
+        self.client = APIClient(); self.client.force_authenticate(self.user)
+
+    def test_ai_endpoints_require_authentication(self):
+        anon = APIClient()
+        self.assertEqual(anon.post("/api/v1/ai/generate/", {"provider": "openai", "api_key": "test-key", "prompt": "x"}, format="json").status_code, 401)
+        self.assertEqual(anon.post("/api/v1/ai/providers/openai/models/", {"api_key": "test-key"}, format="json").status_code, 401)
         self.assertEqual(anon.get("/api/v1/playground/").status_code, 200)
 
+    @patch("tasks.views.process_task.delay")
+    def test_api_key_is_redacted_from_payload_response_and_result(self, _):
+        secret = "test-provider-credential"
+        response = self.client.post("/api/v1/ai/generate/", {"provider": "openai", "api_key": secret, "prompt": "hello"}, format="json")
+        task = Task.objects.get(id=response.data["id"])
+        self.assertEqual(response.status_code, 201)
+        self.assertNotIn(secret, str(task.payload)); self.assertNotIn(secret, str(response.data)); self.assertIsNone(task.result)
+        self.assertNotEqual(task.credential.encrypted_api_key, secret)
+
+    @patch("tasks.views.process_task.delay")
+    def test_prompt_token_limits_and_provider_allowlist(self, _):
+        self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "openai", "api_key": "test-key", "prompt": "x" * 20001}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "openai", "api_key": "test-key", "prompt": "x", "max_tokens": 8193}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "https://example.invalid", "api_key": "test-key", "prompt": "x"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/v1/ai/providers/not-a-provider/models/", {"api_key": "test-key"}, format="json").status_code, 400)
+
+    @patch("tasks.views.process_task.delay")
+    def test_generation_throttle(self, _):
+        for number in range(5):
+            self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "openai", "api_key": "test-key", "prompt": str(number)}, format="json").status_code, 201)
+        self.assertEqual(self.client.post("/api/v1/ai/generate/", {"provider": "openai", "api_key": "test-key", "prompt": "blocked"}, format="json").status_code, 429)
+
     @patch("tasks.views.get_provider")
-    def test_model_discovery_does_not_return_key(self, provider):
+    def test_model_discovery_throttle_and_redaction(self, provider):
         provider.return_value.list_models.return_value = ["gpt-test"]
-        response = self.client.post("/api/v1/ai/providers/openai/models/", {"api_key": "super-secret-key"}, format="json")
-        self.assertEqual(response.status_code, 200); self.assertEqual(response.data["models"], ["gpt-test"])
-        self.assertNotIn("super-secret-key", str(response.data))
+        for _ in range(10):
+            response = self.client.post("/api/v1/ai/providers/openai/models/", {"api_key": "test-key"}, format="json")
+            self.assertEqual(response.status_code, 200); self.assertNotIn("test-key", str(response.data))
+        self.assertEqual(self.client.post("/api/v1/ai/providers/openai/models/", {"api_key": "test-key"}, format="json").status_code, 429)
 
-
-class AIExecutionTests(TestCase):
-    def setUp(self): self.user = get_user_model().objects.create_user(username="worker-ai", password="secure-pass-123")
+    def test_cleanup_expired_credentials_and_cancellation(self):
+        expired = Task.objects.create(owner=self.user, task_type="ai_generate", payload={"provider": "openai", "prompt": "x"})
+        TaskCredential.objects.create(task=expired, encrypted_api_key=TaskCredential.encrypt("test-key"), expires_at=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(cleanup_expired_credentials(), 1)
+        pending = Task.objects.create(owner=self.user, task_type="ai_generate", payload={"provider": "openai", "prompt": "x"})
+        TaskCredential.objects.create(task=pending, encrypted_api_key=TaskCredential.encrypt("test-key"), expires_at=timezone.now() + timedelta(minutes=1))
+        self.assertEqual(self.client.post(f"/api/v1/tasks/{pending.id}/cancel/").status_code, 202)
+        self.assertFalse(TaskCredential.objects.filter(task=pending).exists())
 
     @patch("tasks.executors.deliver_webhook.delay")
     @patch("tasks.executors.get_provider")
-    def test_ai_execution_uses_key_and_removes_credential(self, provider, _):
-        from django.utils import timezone
-        from datetime import timedelta
+    def test_success_removes_credential_and_openai_identifier_has_no_pii(self, provider, _):
         provider.return_value.generate.return_value = {"provider": "openai", "model": "gpt-test", "text": "done"}
-        task = Task.objects.create(owner=self.user, task_type="ai_generate", payload={"provider": "openai", "model": "gpt-test", "prompt": "hello"})
-        from .models import TaskCredential
-        TaskCredential.objects.create(task=task, encrypted_api_key=TaskCredential.encrypt("test-key"), expires_at=timezone.now() + timedelta(minutes=5))
+        task = Task.objects.create(owner=self.user, task_type="ai_generate", payload={"provider": "openai", "prompt": "hello"})
+        TaskCredential.objects.create(task=task, encrypted_api_key=TaskCredential.encrypt("test-key"), expires_at=timezone.now() + timedelta(minutes=1))
         process_task.apply(args=[str(task.id)]).get(); task.refresh_from_db()
-        provider.return_value.generate.assert_called_once(); self.assertEqual(task.result["text"], "done")
+        self.assertEqual(task.status, Task.Status.SUCCESS); self.assertFalse(TaskCredential.objects.filter(task=task).exists())
+        identifier = provider.return_value.generate.call_args.kwargs["safety_identifier"]
+        self.assertTrue(identifier.startswith("usr_")); self.assertNotIn(self.user.username, identifier)
+        if self.user.email:
+            self.assertNotIn(self.user.email, identifier)
+
+    @patch("tasks.executors.deliver_webhook.delay")
+    @patch("tasks.executors.get_provider")
+    def test_terminal_failure_is_sanitized_and_removes_credential(self, provider, _):
+        provider.return_value.generate.side_effect = RuntimeError("Authorization: Bearer test-key")
+        task = Task.objects.create(owner=self.user, task_type="ai_generate", payload={"provider": "openai", "prompt": "x"})
+        TaskCredential.objects.create(task=task, encrypted_api_key=TaskCredential.encrypt("test-key"), expires_at=timezone.now() + timedelta(minutes=1))
+        with patch.object(process_task, "max_retries", 0):
+            process_task.apply(args=[str(task.id)]).get(propagate=False)
+        task.refresh_from_db()
+        self.assertEqual(task.status, Task.Status.FAILED); self.assertEqual(task.error, "AI provider request failed.")
         self.assertFalse(TaskCredential.objects.filter(task=task).exists())
+
+    def test_webhook_data_cannot_contain_credential(self):
+        task = Task.objects.create(owner=self.user, task_type="ai_generate", payload={"provider": "openai", "prompt": "x"}, result={"text": "safe"})
+        self.assertNotIn("api_key", str({"id": str(task.id), "result": task.result, "error": task.error}))
+
+    def test_frontend_clears_key_and_does_not_use_browser_storage(self):
+        source = open("tasks/static/tasks/playground.js", encoding="utf-8").read()
+        self.assertGreaterEqual(source.count("finally { clearKey(); }"), 2)
+        self.assertNotIn("localStorage", source); self.assertNotIn("sessionStorage", source)

@@ -12,6 +12,7 @@ from .executors import process_task
 from .models import Task, TaskCredential
 from .providers import ProviderError, get_provider, provider_metadata
 from .serializers import AIGenerateSerializer, APIKeySerializer, EmptySerializer, RegistrationSerializer, TaskCreateSerializer, TaskDetailSerializer
+from .throttles import AIGenerateThrottle, AIModelDiscoveryThrottle
 
 
 class RegistrationView(generics.CreateAPIView):
@@ -69,7 +70,7 @@ class TaskRetryView(APIView):
             if task.status not in {Task.Status.FAILED, Task.Status.CANCELED}:
                 return Response({"detail": "Only failed or canceled tasks can be retried."}, status=status.HTTP_409_CONFLICT)
             if task.task_type == "ai_generate" and not hasattr(task, "credential") and not _server_key(task.payload.get("provider")):
-                return Response({"detail": "This AI task credential has expired; submit a new request."}, status=status.HTTP_409_CONFLICT)
+                return Response({"detail": "AI credential expired; submit a new task."}, status=status.HTTP_409_CONFLICT)
             task.status, task.error, task.result, task.retries = Task.Status.PENDING, None, None, 0
             task.save(update_fields=["status", "error", "result", "retries", "updated_at"])
             transaction.on_commit(lambda: process_task.delay(str(task.id)))
@@ -89,6 +90,8 @@ class TaskCancelView(APIView):
                 return Response({"detail": "Task cannot be canceled in its current state."}, status=status.HTTP_409_CONFLICT)
             task.status = Task.Status.CANCELED
             task.save(update_fields=["status", "updated_at"])
+            if task.task_type == "ai_generate":
+                TaskCredential.objects.filter(task=task).delete()
         return Response(TaskDetailSerializer(task).data, status=status.HTTP_202_ACCEPTED)
 
 
@@ -101,8 +104,11 @@ class AIProviderListView(APIView):
 
 class AIModelListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AIModelDiscoveryThrottle]
     serializer_class = APIKeySerializer
     def post(self, request, provider):
+        if provider not in {"openai", "gemini", "isaac"}:
+            return Response({"detail": "Unsupported AI provider."}, status=status.HTTP_400_BAD_REQUEST)
         serializer = APIKeySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -114,6 +120,7 @@ class AIModelListView(APIView):
 
 class AIGenerateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AIGenerateThrottle]
     serializer_class = AIGenerateSerializer
     def post(self, request):
         serializer = self.serializer_class(data=request.data)

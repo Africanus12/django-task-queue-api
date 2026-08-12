@@ -102,7 +102,9 @@ The browser never calls an AI provider directly, never puts a key in a URL or lo
 | POST | `/ai/providers/{provider}/models/` | Discover models using the submitted key |
 | POST | `/ai/generate/` | Queue an `ai_generate` task |
 
-All AI endpoints except the public UI require normal task authentication. `POST /ai/generate/` accepts `provider`, `api_key`, `prompt`, optional `model`, `temperature`, and `max_tokens`; `Idempotency-Key` has the same per-owner behavior as standard tasks. Keys are excluded from `Task.payload`, task responses, results, webhooks, logs, and frontend persistence. A per-task credential record is Fernet-encrypted at rest using a key derived from Django `SECRET_KEY`, expires quickly, and is deleted on successful completion. Server environment fallbacks (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `POKEE_API_KEY`) are optional and independent of browser-provided keys.
+All AI endpoints except the public UI require normal task authentication. `POST /ai/generate/` accepts `provider`, `api_key`, `prompt`, optional `model`, `temperature`, and `max_tokens`; `Idempotency-Key` has the same per-owner behavior as standard tasks. Keys are excluded from `Task.payload`, task responses, results, webhooks, logs, and frontend persistence. A per-task credential record is Fernet-encrypted at rest, expires after five minutes by default, is deleted on every terminal state, and is periodically cleaned if a worker crashes. Production should set a dedicated `AI_CREDENTIAL_ENCRYPTION_KEY` Fernet key; a `SECRET_KEY`-derived fallback is development-only. Server environment fallbacks (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `POKEE_API_KEY`) are optional and independent of browser-provided keys.
+
+AI generation is limited to 5 requests/minute per authenticated user and model discovery to 10/minute by default. Limits and maximum input/output sizes are configured with `AI_GENERATE_RATE`, `AI_MODEL_DISCOVERY_RATE`, `AI_MAX_PROMPT_CHARS` (20,000), and `AI_MAX_OUTPUT_TOKENS` (8,192). The backend allowlists only OpenAI, Gemini, and Isaac endpoints; browser-supplied base URLs are never accepted. OpenAI requests include an opaque HMAC-derived `safety_identifier`, not a username, email, or other PII.
 
 Provider adapters normalize `{provider, model, text, usage}` when usage exists. OpenAI uses the current Responses API (`/v1/responses`, default `gpt-5.6`, with `store: false`); Gemini uses the Gemini `generateContent` API; Poke Isaac uses its OpenAI-compatible `/v1/chat/completions` endpoint at `https://api.pokee.ai/v1` with ordinary Celery execution (not provider background mode). Provider calls and model discovery are mocked in tests; no real provider calls run in the suite.
 
@@ -119,7 +121,7 @@ Pass an optional `webhook_url` at creation. Terminal task outcomes are posted wi
 
 ## Environment variables
 
-See `.env.example`. Production requires `SECRET_KEY` and a non-empty `ALLOWED_HOSTS`. Important variables include `DATABASE_URL`, `REDIS_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `TASK_WEBHOOK_TIMEOUT`, and `SECURE_SSL_REDIRECT`.
+See `.env.example`. Production requires `SECRET_KEY`, a non-empty `ALLOWED_HOSTS`, and a dedicated `AI_CREDENTIAL_ENCRYPTION_KEY` for the playground. Important variables include `DATABASE_URL`, `REDIS_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `TASK_WEBHOOK_TIMEOUT`, `SECURE_SSL_REDIRECT`, and the AI rate/size limits.
 
 ## Railway deployment notes
 

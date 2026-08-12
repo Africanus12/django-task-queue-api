@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
@@ -20,9 +21,9 @@ class AIGenerateSerializer(serializers.Serializer):
     provider = serializers.ChoiceField(choices=["openai", "gemini", "isaac"])
     api_key = serializers.CharField(write_only=True, trim_whitespace=True, max_length=512)
     model = serializers.CharField(required=False, allow_blank=False, max_length=200)
-    prompt = serializers.CharField(trim_whitespace=True, max_length=100_000)
+    prompt = serializers.CharField(trim_whitespace=True)
     temperature = serializers.FloatField(required=False, min_value=0, max_value=2)
-    max_tokens = serializers.IntegerField(required=False, min_value=1, max_value=60_000)
+    max_tokens = serializers.IntegerField(required=False, min_value=1)
 
     def validate_api_key(self, value):
         if not value:
@@ -32,6 +33,13 @@ class AIGenerateSerializer(serializers.Serializer):
     def validate_prompt(self, value):
         if not value:
             raise serializers.ValidationError("A prompt is required.")
+        if len(value) > settings.AI_MAX_PROMPT_CHARS:
+            raise serializers.ValidationError("Prompt exceeds the configured maximum length.")
+        return value
+
+    def validate_max_tokens(self, value):
+        if value > settings.AI_MAX_OUTPUT_TOKENS:
+            raise serializers.ValidationError("max_tokens exceeds the configured maximum.")
         return value
 
 

@@ -9,8 +9,15 @@ from django.utils import timezone
 
 from .models import Task, TaskCredential
 from .providers import get_provider
+from .security import openai_safety_identifier, safe_provider_error
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task
+def cleanup_expired_credentials():
+    """Safe maintenance task; no credential values are read or logged."""
+    return TaskCredential.objects.filter(expires_at__lte=timezone.now()).delete()[0]
 
 
 @shared_task(bind=True, max_retries=3)
@@ -29,7 +36,7 @@ def process_task(self, task_id):
             task = Task.objects.select_for_update().filter(id=task_id).first()
             if task is None:
                 return None
-            task.error = str(exc)
+            task.error = safe_provider_error(exc) if task.task_type == "ai_generate" else str(exc)
             task.retries = self.request.retries + 1
             retry_task = self.request.retries < self.max_retries
             task.status = Task.Status.RETRYING if retry_task else Task.Status.FAILED
@@ -65,8 +72,10 @@ def dispatch(task_type, payload, task=None):
         if credential and credential.expires_at > timezone.now():
             api_key = credential.decrypt()
         if not api_key:
-            raise ValueError("AI credential is unavailable or expired.")
+            raise ValueError("AI credential expired; submit a new task.")
         options = {key: payload[key] for key in ("temperature", "max_tokens") if key in payload}
+        if task.owner_id and payload["provider"] == "openai":
+            options["safety_identifier"] = openai_safety_identifier(task.owner_id)
         return provider.generate(api_key=api_key, prompt=payload["prompt"], model=payload.get("model"), **options)
     if task_type == "echo":
         return {"echoed": payload}

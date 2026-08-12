@@ -8,8 +8,12 @@ from django.db import models
 
 
 def credential_cipher():
-    key = base64.urlsafe_b64encode(hashlib.sha256(settings.SECRET_KEY.encode()).digest())
-    return Fernet(key)
+    key = settings.AI_CREDENTIAL_ENCRYPTION_KEY
+    if not key:
+        # Backward-compatible development fallback. Production should set a
+        # dedicated, rotated Fernet key rather than deriving one from SECRET_KEY.
+        key = base64.urlsafe_b64encode(hashlib.sha256(settings.SECRET_KEY.encode()).digest()).decode()
+    return Fernet(key.encode())
 
 
 class Task(models.Model):
@@ -65,7 +69,7 @@ class TaskCredential(models.Model):
 
     task = models.OneToOneField(Task, on_delete=models.CASCADE, related_name="credential")
     encrypted_api_key = models.TextField()
-    expires_at = models.DateTimeField()
+    expires_at = models.DateTimeField(db_index=True)
 
     @classmethod
     def encrypt(cls, api_key):

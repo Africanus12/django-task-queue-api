@@ -3,6 +3,11 @@
 A production-ready Django + DRF + Celery + Redis job queue API. Submit a task,
 it runs asynchronously via a Celery worker, poll (or get webhooked) for the result.
 
+## Live deployment
+
+- **API:** https://web-production-0d58f.up.railway.app
+- **Health check:** https://web-production-0d58f.up.railway.app/healthz/
+
 ## Stack
 
 - Django 5.1 + Django REST Framework
@@ -65,28 +70,41 @@ API at http://localhost:8000/api/v1/, admin at http://localhost:8000/admin/.
 3. Add two plugins: **PostgreSQL** and **Redis**. Railway auto-injects
    `DATABASE_URL`. Copy the Redis connection string into a `REDIS_URL` variable.
 4. In the web service's Variables tab, set:
-   - `SECRET_KEY` — generate a fresh one, don't reuse the example
+   - `SECRET_KEY` — generate a fresh one; do not reuse the example value.
    - `DJANGO_SETTINGS_MODULE=config.settings.prod`
    - `ALLOWED_HOSTS=<your-app>.up.railway.app`
-   - `REDIS_URL` — from step 3
-   - `CORS_ALLOWED_ORIGINS` — your frontend origin, if any
-5. Railway builds from the `Dockerfile` automatically and runs `release:` (migrate)
+   - `REDIS_URL` — from the Redis plugin.
+   - `CORS_ALLOWED_ORIGINS` — your frontend origin, if applicable.
+5. Railway builds from the `Dockerfile` automatically and runs `release:` (migrations)
    from the Procfile before each deploy.
-6. Add a second service from the same repo for the worker. Set its start command to:
+6. Add a second service from the same repository for the worker. Set its start command to:
    ```
    celery -A config worker --loglevel=info
    ```
-   Give it the same env vars as the web service.
+   Give it the same environment variables as the web service.
 7. Once deployed, run once via Railway's shell or CLI:
    ```
    railway run python manage.py createsuperuser
    ```
-8. Confirm health: `GET https://<your-app>.up.railway.app/healthz/`
+8. Confirm health at `GET https://<your-app>.up.railway.app/healthz/`.
+
+## Railway gotchas learned during deployment
+
+- For wildcard Railway domains, `ALLOWED_HOSTS` must use Django's leading-dot syntax:
+  ```
+  .up.railway.app
+  ```
+  Do **not** use `*.up.railway.app`; that is invalid Django syntax and can cause silent
+  HTTP 400 responses on every request.
+- Set `SECURE_SSL_REDIRECT=False` in Railway environment variables. With it enabled,
+  Railway's internal plain-HTTP health check can be redirected instead of receiving a
+  `200` response. Railway terminates TLS at the edge, so disabling Django's redirect
+  does not remove HTTPS protection for public traffic.
 
 ## Notes
 
 - Webhook delivery is best-effort (5s timeout, no retry queue). For guaranteed
   delivery, add a `WebhookDelivery` model and retry via Celery.
 - `send_email` uses Django's email backend; set `EMAIL_BACKEND` and SMTP vars
-  in settings/prod.py for real delivery, or leave console backend for testing.
+  in `config/settings/prod.py` for real delivery, or leave console backend for testing.
 - Rate limiting defaults to 100 requests/minute per user via DRF throttling.

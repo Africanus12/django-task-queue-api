@@ -3,7 +3,8 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.contrib.staticfiles import finders
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -36,6 +37,28 @@ class TaskApiTests(TestCase):
         self.assertEqual(client.post("/api/v1/auth/register/", {"username": "new-user", "password": "secure-password-123"}, format="json").status_code, 201)
         self.assertIn("access", client.post("/api/v1/auth/login/", {"username": "new-user", "password": "secure-password-123"}, format="json").data)
         self.assertEqual(client.get("/api/v1/tasks/").status_code, 401)
+
+
+@override_settings(STORAGES={"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}})
+class SwaggerUiTests(TestCase):
+    def test_docs_use_self_hosted_assets_and_external_initialization_script(self):
+        response = self.client.get("/api/docs/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("script-src 'self'", response["Content-Security-Policy"])
+        self.assertNotIn("cdn.jsdelivr.net", response.content.decode())
+        document = response.content.decode()
+        self.assertIn("/api/docs/?script=", document)
+        self.assertNotIn("<style>", document)
+        for asset in (
+            "drf_spectacular_sidecar/swagger-ui-dist/swagger-ui.css",
+            "drf_spectacular_sidecar/swagger-ui-dist/swagger-ui-bundle.js",
+            "drf_spectacular_sidecar/swagger-ui-dist/swagger-ui-standalone-preset.js",
+        ):
+            self.assertIsNotNone(finders.find(asset))
+        script_response = self.client.get("/api/docs/?script=")
+        self.assertEqual(script_response.status_code, 200)
+        self.assertEqual(script_response["Content-Type"].split(";", 1)[0], "application/javascript")
 
 
 class AIHardeningTests(TestCase):

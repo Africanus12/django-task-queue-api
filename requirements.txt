@@ -10,4 +10,5 @@ whitenoise==6.8.2
 requests==2.32.3
 djangorestframework-simplejwt==5.3.1
 drf-spectacular==0.27.2
+drf-spectacular-sidecar==2024.12.1
 cryptography==43.0.3

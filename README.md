@@ -88,6 +88,24 @@ Submitting the same idempotency key again for the same user returns the original
 
 Supported types are `echo` and `send_email`. `send_email` requires `to`, `subject`, and `message` in its payload and uses Django's configured email backend.
 
+## AI Playground
+
+The responsive browser playground is available at `/api/v1/playground/`. Sign in with a JWT access token, select OpenAI, Gemini, or Poke Isaac, supply a key, dynamically load models, set an optional temperature or token limit, and run a prompt. The page polls the existing task endpoint and displays queue status, provider, model, elapsed duration, result, and any safe error.
+
+The browser never calls an AI provider directly, never puts a key in a URL or local storage, and clears the key field after submission. Use HTTPS in production. Generation follows the normal flow: browser → Django API → `Task` → Celery → provider → `Task.result` → polling.
+
+### AI API
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/ai/providers/` | List supported provider metadata |
+| POST | `/ai/providers/{provider}/models/` | Discover models using the submitted key |
+| POST | `/ai/generate/` | Queue an `ai_generate` task |
+
+All AI endpoints except the public UI require normal task authentication. `POST /ai/generate/` accepts `provider`, `api_key`, `prompt`, optional `model`, `temperature`, and `max_tokens`; `Idempotency-Key` has the same per-owner behavior as standard tasks. Keys are excluded from `Task.payload`, task responses, results, webhooks, logs, and frontend persistence. A per-task credential record is Fernet-encrypted at rest using a key derived from Django `SECRET_KEY`, expires quickly, and is deleted on successful completion. Server environment fallbacks (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `POKEE_API_KEY`) are optional and independent of browser-provided keys.
+
+Provider adapters normalize `{provider, model, text, usage}` when usage exists. OpenAI uses the current Responses API (`/v1/responses`, default `gpt-5.6`, with `store: false`); Gemini uses the Gemini `generateContent` API; Poke Isaac uses its OpenAI-compatible `/v1/chat/completions` endpoint at `https://api.pokee.ai/v1` with ordinary Celery execution (not provider background mode). Provider calls and model discovery are mocked in tests; no real provider calls run in the suite.
+
 ## Webhooks
 
 Pass an optional `webhook_url` at creation. Terminal task outcomes are posted with task ID, type, status, result, and error. Delivery uses a short configurable timeout and exponential retry; webhook status, attempts, and the latest delivery error are recorded on the task. Execution status is never changed by a delivery failure.
@@ -121,7 +139,3 @@ DJANGO_SETTINGS_MODULE=config.settings.dev SECRET_KEY=test-secret python manage.
 ```
 
 GitHub Actions runs checks, migration consistency validation, and the test suite for pushes and pull requests.
-
-## Deployment
-
-Production deployment configured through Railway.

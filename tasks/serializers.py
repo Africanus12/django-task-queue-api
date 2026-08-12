@@ -12,7 +12,39 @@ class TaskCreateSerializer(serializers.ModelSerializer):
 
     def validate_task_type(self, value):
         if value not in {"echo", "send_email"}:
-            raise serializers.ValidationError("Unsupported task_type.")
+            raise serializers.ValidationError("Unsupported task_type. Use the dedicated AI endpoint for ai_generate.")
+        return value
+
+
+class AIGenerateSerializer(serializers.Serializer):
+    provider = serializers.ChoiceField(choices=["openai", "gemini", "isaac"])
+    api_key = serializers.CharField(write_only=True, trim_whitespace=True, max_length=512)
+    model = serializers.CharField(required=False, allow_blank=False, max_length=200)
+    prompt = serializers.CharField(trim_whitespace=True, max_length=100_000)
+    temperature = serializers.FloatField(required=False, min_value=0, max_value=2)
+    max_tokens = serializers.IntegerField(required=False, min_value=1, max_value=60_000)
+
+    def validate_api_key(self, value):
+        if not value:
+            raise serializers.ValidationError("An API key is required.")
+        return value
+
+    def validate_prompt(self, value):
+        if not value:
+            raise serializers.ValidationError("A prompt is required.")
+        return value
+
+
+class EmptySerializer(serializers.Serializer):
+    pass
+
+
+class APIKeySerializer(serializers.Serializer):
+    api_key = serializers.CharField(write_only=True, trim_whitespace=True, max_length=512)
+
+    def validate_api_key(self, value):
+        if not value:
+            raise serializers.ValidationError("An API key is required.")
         return value
 
 

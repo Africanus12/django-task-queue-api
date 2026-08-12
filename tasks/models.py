@@ -1,7 +1,15 @@
+import base64
+import hashlib
 import uuid
 
+from cryptography.fernet import Fernet
 from django.conf import settings
 from django.db import models
+
+
+def credential_cipher():
+    key = base64.urlsafe_b64encode(hashlib.sha256(settings.SECRET_KEY.encode()).digest())
+    return Fernet(key)
 
 
 class Task(models.Model):
@@ -50,3 +58,18 @@ class Task(models.Model):
 
     def __str__(self):
         return f"{self.task_type} ({self.status})"
+
+
+class TaskCredential(models.Model):
+    """Short-lived encrypted user-provided credential, never serialized with a task."""
+
+    task = models.OneToOneField(Task, on_delete=models.CASCADE, related_name="credential")
+    encrypted_api_key = models.TextField()
+    expires_at = models.DateTimeField()
+
+    @classmethod
+    def encrypt(cls, api_key):
+        return credential_cipher().encrypt(api_key.encode()).decode()
+
+    def decrypt(self):
+        return credential_cipher().decrypt(self.encrypted_api_key.encode()).decode()

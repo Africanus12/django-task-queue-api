@@ -5,8 +5,10 @@ from celery import shared_task
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction
+from django.utils import timezone
 
-from .models import Task
+from .models import Task, TaskCredential
+from .providers import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ def process_task(self, task_id):
                 return None
             task.status = Task.Status.RUNNING
             task.save(update_fields=["status", "updated_at"])
-        result = dispatch(task.task_type, task.payload)
+        result = dispatch(task.task_type, task.payload, task=task)
     except Exception as exc:
         retry_task = False
         with transaction.atomic():
@@ -36,6 +38,8 @@ def process_task(self, task_id):
         # schedules the next execution.
         if retry_task:
             raise self.retry(exc=exc, countdown=min(2 ** task.retries, 300))
+        if task.task_type == "ai_generate":
+            TaskCredential.objects.filter(task=task).delete()
         deliver_webhook.delay(str(task.id))
         return None
 
@@ -45,11 +49,25 @@ def process_task(self, task_id):
             return None
         task.status, task.result, task.error = Task.Status.SUCCESS, result, None
         task.save(update_fields=["status", "result", "error", "updated_at"])
+        if task.task_type == "ai_generate":
+            TaskCredential.objects.filter(task=task).delete()
     deliver_webhook.delay(str(task.id))
     return result
 
 
-def dispatch(task_type, payload):
+def dispatch(task_type, payload, task=None):
+    if task_type == "ai_generate":
+        provider = get_provider(payload["provider"])
+        api_key = getattr(settings, {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "isaac": "POKEE_API_KEY"}[payload["provider"]], "")
+        credential = None
+        if task is not None:
+            credential = TaskCredential.objects.filter(task=task).first()
+        if credential and credential.expires_at > timezone.now():
+            api_key = credential.decrypt()
+        if not api_key:
+            raise ValueError("AI credential is unavailable or expired.")
+        options = {key: payload[key] for key in ("temperature", "max_tokens") if key in payload}
+        return provider.generate(api_key=api_key, prompt=payload["prompt"], model=payload.get("model"), **options)
     if task_type == "echo":
         return {"echoed": payload}
     if task_type == "send_email":

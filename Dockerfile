@@ -18,4 +18,14 @@ RUN DJANGO_SETTINGS_MODULE=config.settings.prod SECRET_KEY=build-only \
     DATABASE_URL=sqlite:///build.sqlite3 REDIS_URL=redis://localhost:6379/0 \
     python manage.py collectstatic --noinput
 
+# Create a dedicated non-root user to run the application and worker processes.
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --home-dir /home/appuser --shell /bin/bash --create-home appuser \
+    && mkdir -p /home/appuser \
+    && chown -R appuser:appuser /app /home/appuser \
+    && mkdir -p /tmp \
+    && chmod 1777 /tmp
+
+USER appuser
+
 CMD gunicorn config.wsgi:application --bind 0.0.0.0:$PORT

@@ -7,7 +7,7 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Task, TaskCredential
+from .models import ProviderCredential, Task, TaskCredential
 from .providers import get_provider
 from .security import openai_safety_identifier, safe_provider_error
 
@@ -65,14 +65,19 @@ def process_task(self, task_id):
 def dispatch(task_type, payload, task=None):
     if task_type == "ai_generate":
         provider = get_provider(payload["provider"])
-        api_key = getattr(settings, {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "isaac": "POKEE_API_KEY"}[payload["provider"]], "")
-        credential = None
-        if task is not None:
-            credential = TaskCredential.objects.filter(task=task).first()
+        # A saved BYOK task must never fall back to a deployment-wide key. If its
+        # owner removes the credential before execution, it fails safely instead.
+        uses_saved_credential = task is not None and payload.get("credential_source") == "saved"
+        api_key = "" if uses_saved_credential else getattr(settings, {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "isaac": "POKEE_API_KEY"}[payload["provider"]], "")
+        credential = TaskCredential.objects.filter(task=task).first() if task is not None else None
         if credential and credential.expires_at > timezone.now():
             api_key = credential.decrypt()
+        elif uses_saved_credential:
+            saved_credential = ProviderCredential.objects.filter(owner=task.owner, provider=payload["provider"]).first()
+            if saved_credential:
+                api_key = saved_credential.decrypt()
         if not api_key:
-            raise ValueError("AI credential expired; submit a new task.")
+            raise ValueError("AI credential expired or is unavailable; submit a new task.")
         options = {key: payload[key] for key in ("temperature", "max_tokens") if key in payload}
         if task.owner_id and payload["provider"] == "openai":
             options["safety_identifier"] = openai_safety_identifier(task.owner_id)

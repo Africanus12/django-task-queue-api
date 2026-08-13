@@ -6,6 +6,16 @@ if SECRET_KEY == "dev-insecure-secret-key-change-me":
     raise RuntimeError("SECRET_KEY must be set in production.")
 if not ALLOWED_HOSTS:
     raise RuntimeError("ALLOWED_HOSTS must be configured in production.")
+if not AI_CREDENTIAL_ENCRYPTION_KEY:
+    raise RuntimeError("AI_CREDENTIAL_ENCRYPTION_KEY must be set in production.")
+
+# Fail closed at startup instead of discovering a malformed credential key while
+# handling a request (which could otherwise produce an operational 500).
+from cryptography.fernet import Fernet
+try:
+    Fernet(AI_CREDENTIAL_ENCRYPTION_KEY.encode())
+except (TypeError, ValueError) as exc:
+    raise RuntimeError("AI_CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key.") from exc
 
 # Railway terminates TLS at its edge. Set this to False there so internal HTTP
 # health checks do not receive redirects.

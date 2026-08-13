@@ -12,6 +12,6 @@ def openai_safety_identifier(user_id):
 
 def safe_provider_error(exc):
     """Never return arbitrary upstream exception text to clients or task records."""
-    if str(exc) == "AI credential expired; submit a new task.":
+    if str(exc) in {"AI credential expired; submit a new task.", "AI credential expired or is unavailable; submit a new task."}:
         return str(exc)
     return "AI provider request failed."

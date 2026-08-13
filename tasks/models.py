@@ -64,12 +64,13 @@ class Task(models.Model):
         return f"{self.task_type} ({self.status})"
 
 
-class TaskCredential(models.Model):
-    """Short-lived encrypted user-provided credential, never serialized with a task."""
+class EncryptedCredential(models.Model):
+    """Common Fernet encryption helpers for credentials that are never serialized."""
 
-    task = models.OneToOneField(Task, on_delete=models.CASCADE, related_name="credential")
+    class Meta:
+        abstract = True
+
     encrypted_api_key = models.TextField()
-    expires_at = models.DateTimeField(db_index=True)
 
     @classmethod
     def encrypt(cls, api_key):
@@ -77,3 +78,24 @@ class TaskCredential(models.Model):
 
     def decrypt(self):
         return credential_cipher().decrypt(self.encrypted_api_key.encode()).decode()
+
+
+class ProviderCredential(EncryptedCredential):
+    """An owner-scoped, persistent BYOK credential; the plaintext is never exposed."""
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="provider_credentials")
+    provider = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["owner", "provider"], name="unique_provider_credential_per_owner"),
+        ]
+
+
+class TaskCredential(EncryptedCredential):
+    """Short-lived encrypted user-provided credential, never serialized with a task."""
+
+    task = models.OneToOneField(Task, on_delete=models.CASCADE, related_name="credential")
+    expires_at = models.DateTimeField(db_index=True)

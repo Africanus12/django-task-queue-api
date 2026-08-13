@@ -1,1 +1,68 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Playground</title><link rel="stylesheet" href="/static/tasks/playground.css"></head><body><main><h1>AI Playground</h1><p class="intro">Run OpenAI, Gemini, or Poke Isaac through the secure Celery queue.</p><section id="auth"><h2>Sign in</h2><input id="token" type="password" placeholder="JWT access token"><button id="load">Load providers</button><small>Your token stays in this page only.</small></section><section id="app" hidden><label>Provider<select id="provider"></select></label><label>API key <span><input id="key" type="password" autocomplete="off" placeholder="Key is sent only to this backend"><button type="button" id="toggle">Show</button></span></label><button id="models" type="button">Load models</button><label>Model<select id="model"></select></label><label>Prompt<textarea id="prompt" rows="7" placeholder="What would you like to generate?"></textarea></label><details><summary>Optional parameters</summary><label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1"></label><label>Max tokens <input id="max_tokens" type="number" min="1" max="60000"></label></details><div class="actions"><button id="run">Run</button><button id="clear" type="button">Clear</button></div></section><section id="output" aria-live="polite"><p>Sign in to begin.</p></section></main><script src="/static/tasks/playground.js"></script></body></html>
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AI Playground</title>
+  <link rel="stylesheet" href="{% static 'tasks/playground.css' %}">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero panel panel--hero">
+      <div>
+        <p class="eyebrow">Private AI workspace</p>
+        <h1>AI Playground<span class="dot">.</span></h1>
+        <p class="lede">A focused space to run your prompts with the providers you trust.</p>
+      </div>
+      <div class="secure-mark" aria-label="Credentials are protected"><span class="secure-mark__icon" aria-hidden="true">⌁</span><span>Encrypted<br>BYOK</span></div>
+    </header>
+
+    <section class="panel auth-panel" id="auth-panel" aria-labelledby="auth-title">
+      <div class="panel-heading"><div><p class="eyebrow">Access</p><h2 id="auth-title">Connect your workspace</h2></div><span class="status-chip" id="auth-status">Not connected</span></div>
+      <p class="muted">Use your JWT access token to securely manage your own provider credentials. It remains only in this page while it is open.</p>
+      <div class="auth-row">
+        <label class="field field--grow" for="token"><span>JWT access token</span><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste access token" aria-describedby="auth-help"></label>
+        <button class="button button--primary" id="connect" type="button">Connect</button>
+        <button class="button button--quiet" id="signout" type="button" hidden>Sign out</button>
+      </div>
+      <p class="help" id="auth-help">No token or API key is stored in browser storage, cookies, or URLs.</p>
+    </section>
+
+    <section id="workspace" hidden>
+      <div class="workspace-grid">
+        <section class="panel byok-panel" aria-labelledby="byok-title">
+          <div class="panel-heading"><div><p class="eyebrow">Bring Your Own API Key</p><h2 id="byok-title">Your provider, your key</h2></div><span class="lock-note" aria-label="Keys are encrypted">⌁ Protected</span></div>
+          <p class="muted">Your key belongs to you and is used only to make requests through this Playground. We store it encrypted and never show it again.</p>
+          <fieldset class="provider-list" aria-label="Choose an AI provider"><legend class="sr-only">Provider</legend>
+            <label class="provider-card"><input type="radio" name="provider" value="openai" checked><span class="provider-card__mark">O</span><span class="provider-card__copy"><strong>OpenAI</strong><small>GPT models</small></span><span class="provider-card__state" id="state-openai">Not connected</span></label>
+            <label class="provider-card"><input type="radio" name="provider" value="gemini"><span class="provider-card__mark provider-card__mark--gemini">G</span><span class="provider-card__copy"><strong>Gemini</strong><small>Google AI</small></span><span class="provider-card__state" id="state-gemini">Not connected</span></label>
+            <label class="provider-card"><input type="radio" name="provider" value="isaac"><span class="provider-card__mark provider-card__mark--isaac">P</span><span class="provider-card__copy"><strong>Pokee</strong><small>Isaac models</small></span><span class="provider-card__state" id="state-isaac">Not connected</span></label>
+          </fieldset>
+          <div class="credential-box" id="credential-box">
+            <label class="field" for="api-key"><span id="key-label">OpenAI API key</span><div class="key-row"><input id="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste a key to connect"><button class="button button--icon" id="toggle-key" type="button" aria-label="Show API key">Show</button></div></label>
+            <div class="button-row"><button class="button button--primary" id="save-key" type="button">Save key</button><button class="button button--quiet" id="remove-key" type="button" hidden>Remove key</button></div>
+          </div>
+          <p class="help">The key is sent only to this backend over your secure connection. It is never placed in this page’s source or browser storage.</p>
+        </section>
+
+        <section class="panel composer-panel" aria-labelledby="composer-title">
+          <div class="panel-heading"><div><p class="eyebrow">Compose</p><h2 id="composer-title">Make something useful</h2></div><span class="status-chip status-chip--ready" id="provider-status">Choose a connected provider</span></div>
+          <div class="control-grid"><label class="field" for="model"><span>Model</span><select id="model" disabled><option>Connect a provider first</option></select></label><button class="button button--quiet button--models" id="load-models" type="button" disabled>Refresh models</button></div>
+          <label class="field field--prompt" for="prompt"><span>Prompt</span><textarea id="prompt" rows="9" maxlength="20000" placeholder="Ask anything…" disabled></textarea><span class="counter" id="prompt-count">0 / 20,000</span></label>
+          <details class="parameters"><summary>Generation settings</summary><div class="parameter-grid"><label class="field" for="temperature"><span>Temperature</span><input id="temperature" type="number" min="0" max="2" step="0.1" placeholder="Default" disabled></label><label class="field" for="max-tokens"><span>Max tokens</span><input id="max-tokens" type="number" min="1" max="8192" step="1" placeholder="Default" disabled></label></div></details>
+          <div class="generate-row"><button class="button button--generate" id="generate" type="button" disabled><span class="spinner" aria-hidden="true"></span><span id="generate-label">Generate</span></button><span class="generate-note">Runs through the secure queue</span></div>
+        </section>
+      </div>
+
+      <section class="panel response-panel" id="response-panel" aria-labelledby="response-title" aria-live="polite">
+        <div class="panel-heading"><div><p class="eyebrow">Response</p><h2 id="response-title">Ready when you are</h2></div><span class="status-chip" id="task-status">Idle</span></div>
+        <p class="muted" id="response-message">Connect a provider, then write a prompt to begin.</p>
+        <div class="response-meta" id="response-meta" hidden></div><pre class="response-output" id="response-output" hidden></pre>
+      </section>
+    </section>
+  </main>
+  <script src="{% static 'tasks/playground.js' %}"></script>
+</body>
+</html>

@@ -21,7 +21,11 @@ LANGUAGE_CODE, TIME_ZONE, USE_I18N, USE_TZ = "en-us", "UTC", True, True
 STATIC_URL, STATIC_ROOT = "static/", BASE_DIR / "staticfiles"
 STORAGES = {"staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"}}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-REST_FRAMEWORK = {"DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework_simplejwt.authentication.JWTAuthentication", "rest_framework.authentication.TokenAuthentication"], "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"], "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination", "PAGE_SIZE": 20, "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.UserRateThrottle"], "DEFAULT_THROTTLE_RATES": {"user": "100/minute", "ai_generate": env("AI_GENERATE_RATE", default="5/minute"), "ai_model_discovery": env("AI_MODEL_DISCOVERY_RATE", default="10/minute")}, "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema"}
+REST_FRAMEWORK = {"DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework_simplejwt.authentication.JWTAuthentication", "rest_framework.authentication.TokenAuthentication"], "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"], "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination", "PAGE_SIZE": 20, "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.UserRateThrottle"], "DEFAULT_THROTTLE_RATES": {"user": "100/minute", "ai_generate": env("AI_GENERATE_RATE", default="5/minute"), "ai_model_discovery": env("AI_MODEL_DISCOVERY_RATE", default="10/minute"), "ai_credential": env("AI_CREDENTIAL_RATE", default="5/minute")}, "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema"}
+# Bound request buffering before parsers deserialize JSON. Endpoint serializers impose
+# tighter field-level limits for API keys, models, and prompts.
+DATA_UPLOAD_MAX_MEMORY_SIZE = env.int("DATA_UPLOAD_MAX_MEMORY_SIZE", default=131072)
+DATA_UPLOAD_MAX_NUMBER_FIELDS = env.int("DATA_UPLOAD_MAX_NUMBER_FIELDS", default=100)
 SPECTACULAR_SETTINGS = {"TITLE": "Task Queue API", "VERSION": "1.0.0", "SWAGGER_UI_DIST": "SIDECAR", "SWAGGER_UI_FAVICON_HREF": "SIDECAR"}
 REDIS_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_BROKER_URL = REDIS_URL

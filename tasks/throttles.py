@@ -7,3 +7,9 @@ class AIGenerateThrottle(UserRateThrottle):
 
 class AIModelDiscoveryThrottle(UserRateThrottle):
     scope = "ai_model_discovery"
+
+
+class AICredentialThrottle(UserRateThrottle):
+    """Limit key validation attempts to reduce provider-key probing and cost."""
+
+    scope = "ai_credential"
